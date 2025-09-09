@@ -15,8 +15,8 @@ permissions:
 env:
   RG: az-jrc-test
   ACA_APP: azdavikaka-22
-  ACR_LOGIN_SERVER: acrforpremium-a5hpfxbyemgcbsa8.azurecr.io   # login server EXACTO
-  IMAGE_REPO: azdavikaka-22                                     # repo en tu ACR
+  ACR_LOGIN_SERVER: acrforpremium-a5hpfxbyemgcbsa8.azurecr.io  # login server EXACTO
+  IMAGE_REPO: azdavikaka-22                                    # repo en tu ACR
   TARGET_PORT: 80
 
 jobs:
@@ -33,6 +33,15 @@ jobs:
           tenant-id: ${{ secrets.AZDAVIKAKA22_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZDAVIKAKA22_AZURE_SUBSCRIPTION_ID }}
 
+      # Enlaza el ACR al Container App usando identidad del sistema (idempotente)
+      - name: Link ACR to Container App (managed identity)
+        run: |
+          az containerapp registry set \
+            -g ${{ env.RG }} -n ${{ env.ACA_APP }} \
+            --server ${{ env.ACR_LOGIN_SERVER }} \
+            --identity system
+
+      # Despliegue: NO enviamos user/pass; el pull lo hace el runtime con la identidad
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v2
         with:
@@ -40,18 +49,19 @@ jobs:
           containerAppName: ${{ env.ACA_APP }}
           imageToDeploy: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_REPO }}:${{ inputs.image_tag }}
           registryUrl: ${{ env.ACR_LOGIN_SERVER }}
-          registryUsername: ${{ secrets.AZDAVIKAKA22_REGISTRY_USERNAME }}
-          registryPassword: ${{ secrets.AZDAVIKAKA22_REGISTRY_PASSWORD }}
           ingress: external
           targetPort: ${{ env.TARGET_PORT }}
 
+      # Opcional: evita cold start
       - name: Ensure min replicas = 1
         run: |
           az containerapp update \
             -g ${{ env.RG }} -n ${{ env.ACA_APP }} \
             --min-replicas 1
 
+      # Opcional: muestra el FQDN para probar
       - name: Show app FQDN
         run: |
           FQDN=$(az containerapp show -g ${{ env.RG }} -n ${{ env.ACA_APP }} --query "properties.configuration.ingress.fqdn" -o tsv)
           echo "FQDN: https://$FQDN"
+
