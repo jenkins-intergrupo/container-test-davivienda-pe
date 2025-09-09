@@ -15,8 +15,8 @@ permissions:
 env:
   RG: az-jrc-test
   ACA_APP: azdavikaka-22
-  ACR_LOGIN_SERVER: acrforpremium-a5hpfxbyemgcbsa8.azurecr.io  # login server EXACTO
-  IMAGE_REPO: azdavikaka-22                                    # repo en tu ACR
+  ACR_LOGIN_SERVER: acrforpremium-a5hpfxbyemgcbsa8.azurecr.io
+  IMAGE_REPO: azdavikaka-22
   TARGET_PORT: 80
 
 jobs:
@@ -33,15 +33,32 @@ jobs:
           tenant-id: ${{ secrets.AZDAVIKAKA22_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZDAVIKAKA22_AZURE_SUBSCRIPTION_ID }}
 
-      # Enlaza el ACR al Container App usando identidad del sistema (idempotente)
       - name: Link ACR to Container App (managed identity)
+        shell: bash
         run: |
-          az containerapp registry set \
-            -g ${{ env.RG }} -n ${{ env.ACA_APP }} \
-            --server ${{ env.ACR_LOGIN_SERVER }} \
-            --identity system
+          set -e
+          RG="${{ env.RG }}"
+          APP="${{ env.ACA_APP }}"
+          ACR="${{ env.ACR_LOGIN_SERVER }}"
 
-      # Despliegue: NO enviamos user/pass; el pull lo hace el runtime con la identidad
+          already=$(az containerapp show -g "$RG" -n "$APP" \
+            --query "properties.configuration.registries[?server=='$ACR']|length(@)" -o tsv || echo 0)
+
+          if [ "$already" = "1" ]; then
+            echo "Registry $ACR ya vinculado. Sigo…"
+          else
+            az containerapp registry set -g "$RG" -n "$APP" \
+              --server "$ACR" --identity system --no-wait
+            echo "Esperando a que quede vinculado…"
+            for i in {1..20}; do
+              sleep 15
+              linked=$(az containerapp show -g "$RG" -n "$APP" \
+                --query "properties.configuration.registries[?server=='$ACR']|length(@)" -o tsv || echo 0)
+              [ "$linked" = "1" ] && { echo "OK: registry vinculado."; break; }
+              echo "Aún no… ($i/20)"
+            done
+          fi
+
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v2
         with:
@@ -52,16 +69,13 @@ jobs:
           ingress: external
           targetPort: ${{ env.TARGET_PORT }}
 
-      # Opcional: evita cold start
       - name: Ensure min replicas = 1
         run: |
           az containerapp update \
             -g ${{ env.RG }} -n ${{ env.ACA_APP }} \
             --min-replicas 1
 
-      # Opcional: muestra el FQDN para probar
       - name: Show app FQDN
         run: |
           FQDN=$(az containerapp show -g ${{ env.RG }} -n ${{ env.ACA_APP }} --query "properties.configuration.ingress.fqdn" -o tsv)
           echo "FQDN: https://$FQDN"
-
