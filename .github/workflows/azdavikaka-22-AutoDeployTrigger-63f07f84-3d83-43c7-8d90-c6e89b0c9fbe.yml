@@ -33,6 +33,7 @@ jobs:
           tenant-id: ${{ secrets.AZDAVIKAKA22_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZDAVIKAKA22_AZURE_SUBSCRIPTION_ID }}
 
+      # 1) Vincula el ACR con identidad administrada (idempotente, sin bloquear)
       - name: Link ACR to Container App (managed identity)
         shell: bash
         run: |
@@ -41,24 +42,37 @@ jobs:
           APP="${{ env.ACA_APP }}"
           ACR="${{ env.ACR_LOGIN_SERVER }}"
 
-          already=$(az containerapp show -g "$RG" -n "$APP" \
-            --query "properties.configuration.registries[?server=='$ACR']|length(@)" -o tsv || echo 0)
+          # Intenta vincular (no falla si ya existe). --no-wait para no bloquear el job
+          az containerapp registry set -g "$RG" -n "$APP" \
+            --server "$ACR" --identity system --no-wait || true
 
-          if [ "$already" = "1" ]; then
-            echo "Registry $ACR ya vinculado. Sigo…"
-          else
-            az containerapp registry set -g "$RG" -n "$APP" \
-              --server "$ACR" --identity system --no-wait
-            echo "Esperando a que quede vinculado…"
-            for i in {1..20}; do
-              sleep 15
-              linked=$(az containerapp show -g "$RG" -n "$APP" \
-                --query "properties.configuration.registries[?server=='$ACR']|length(@)" -o tsv || echo 0)
-              [ "$linked" = "1" ] && { echo "OK: registry vinculado."; break; }
-              echo "Aún no… ($i/20)"
-            done
+      # 2) Espera a que termine cualquier operación y que el registry quede presente
+      - name: Wait until Container App is Ready (no active operations)
+        shell: bash
+        run: |
+          set -e
+          RG="${{ env.RG }}"
+          APP="${{ env.ACA_APP }}"
+          ACR="${{ env.ACR_LOGIN_SERVER }}"
+
+          echo "Esperando a que termine el provisioning y el registry aparezca..."
+          for i in {1..40}; do
+            state=$(az containerapp show -g "$RG" -n "$APP" --query "properties.provisioningState" -o tsv 2>/dev/null || echo "Unknown")
+            reg=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.registries[?server=='$ACR'] | length(@)" -o tsv 2>/dev/null || echo 0)
+            echo "Intento $i/40 -> state=$state, registryLinked=$reg"
+            if [ "$state" = "Succeeded" ] && [ "$reg" = "1" ]; then
+              echo "OK: provisioning completado y registry vinculado."
+              break
+            fi
+            sleep 15
+          done
+
+          if [ "$state" != "Succeeded" ] || [ "$reg" != "1" ]; then
+            echo "Timeout esperando a que finalice la operación o se vincule el registry."
+            exit 1
           fi
 
+      # 3) Despliegue (sin user/pass: el pull lo hace ACA con su identidad)
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v2
         with:
@@ -69,12 +83,14 @@ jobs:
           ingress: external
           targetPort: ${{ env.TARGET_PORT }}
 
+      # 4) Evitar cold start
       - name: Ensure min replicas = 1
         run: |
           az containerapp update \
             -g ${{ env.RG }} -n ${{ env.ACA_APP }} \
             --min-replicas 1
 
+      # 5) Mostrar FQDN para prueba rápida
       - name: Show app FQDN
         run: |
           FQDN=$(az containerapp show -g ${{ env.RG }} -n ${{ env.ACA_APP }} --query "properties.configuration.ingress.fqdn" -o tsv)
