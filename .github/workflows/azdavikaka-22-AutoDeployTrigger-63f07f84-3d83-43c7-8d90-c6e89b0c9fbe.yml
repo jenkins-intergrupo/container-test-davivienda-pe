@@ -8,7 +8,7 @@ on:
         required: true
         default: 'demo/nginx'
       image_tag:
-        description: 'Tag en ACR'
+        description: 'Tag en ACR (debe existir en tu ACR privado)'
         required: true
         default: '1.27-alpine'
 
@@ -17,7 +17,6 @@ permissions:
   contents: read
 
 env:
-  # === Tu entorno ===
   RG: az-jrc-test
   ACA_APP: azdavikaka-22
   ACR_NAME: acrforpremium
@@ -38,7 +37,7 @@ jobs:
           tenant-id: ${{ secrets.AZDAVIKAKA22_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZDAVIKAKA22_AZURE_SUBSCRIPTION_ID }}
 
-      # (Idempotente) Vincula el ACR al Container App con identidad del sistema
+      # Vincula el ACR al Container App con identidad del sistema (idempotente)
       - name: Link ACR to Container App (managed identity)
         shell: bash
         run: |
@@ -49,7 +48,7 @@ jobs:
             --identity system \
             --no-wait || true
 
-      # Espera a que NO haya operación activa y el registry ya esté vinculado
+      # Espera a que NO haya operación activa y que el registry ya esté vinculado
       - name: Wait until Container App is Ready (no active operations)
         shell: bash
         run: |
@@ -70,25 +69,7 @@ jobs:
             sleep 15
           done
 
-      # Fail-fast si el tag no existe en el ACR
-      - name: Verify image tag exists in ACR
-        shell: bash
-        run: |
-          set -e
-          REPO="${{ github.event.inputs.image_repo }}"
-          TAG="${{ github.event.inputs.image_tag }}"
-          echo "Verificando $REPO:$TAG en ${{ env.ACR_NAME }} ..."
-          exists=$(az acr repository show-tags -n "${{ env.ACR_NAME }}" --repository "$REPO" \
-            --query "contains(@, '$TAG')" -o tsv 2>/dev/null || echo false)
-          if [ "$exists" != "true" ]; then
-            echo "::error::La imagen $REPO:$TAG no existe en ACR."
-            echo "::group::Tags disponibles"
-            az acr repository show-tags -n "${{ env.ACR_NAME }}" --repository "$REPO" -o table || true
-            echo "::endgroup::"
-            exit 1
-          fi
-
-      # Despliegue (pull lo hace ACA con su identidad; no usar user/pass)
+      # Despliegue (pull lo hace ACA con su identidad y su conectividad privada)
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v2
         with:
@@ -99,7 +80,7 @@ jobs:
           ingress: external
           targetPort: ${{ env.TARGET_PORT }}
 
-      # Opcional: evitar cold start
+      # Evitar cold start (opcional)
       - name: Ensure min replicas = 1
         shell: bash
         run: |
@@ -113,3 +94,5 @@ jobs:
         run: |
           FQDN=$(az containerapp show -g "${{ env.RG }}" -n "${{ env.ACA_APP }}" --query "properties.configuration.ingress.fqdn" -o tsv)
           echo "FQDN: https://$FQDN"
+
+
