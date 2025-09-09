@@ -16,7 +16,7 @@ env:
   RG: az-jrc-test
   ACA_APP: azdavikaka-22
   ACR_LOGIN_SERVER: acrforpremium-a5hpfxbyemgcbsa8.azurecr.io
-  IMAGE_REPO: azdavikaka-22
+  IMAGE_REPO: demo/nginx
   TARGET_PORT: 80
 
 jobs:
@@ -95,3 +95,4 @@ jobs:
         run: |
           FQDN=$(az containerapp show -g ${{ env.RG }} -n ${{ env.ACA_APP }} --query "properties.configuration.ingress.fqdn" -o tsv)
           echo "FQDN: https://$FQDN"
+
